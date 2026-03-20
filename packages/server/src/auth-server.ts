@@ -6,10 +6,19 @@ import passport from "passport";
 import { getDb, saveDb } from "./db.js";
 import { passport as passportAuth, setupGoogleStrategy } from "./google-strategy.js";
 
-const BASE = process.env.BASE_URL ?? "http://localhost:3000";
+const BASE = normalizeBaseUrl(process.env.BASE_URL ?? "http://localhost:3000");
+const DEFAULT_SCOPE = process.env.DEFAULT_SCOPE ?? "default";
+const SUPPORTED_SCOPES = parseScopes(process.env.SUPPORTED_SCOPES, [
+  "openid",
+  "profile",
+  "email",
+  DEFAULT_SCOPE,
+]);
 
 if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET env var is required — set it in packages/server/.env");
 if (!process.env.SESSION_SECRET) throw new Error("SESSION_SECRET env var is required — set it in packages/server/.env");
+assertSecretStrength("JWT_SECRET", process.env.JWT_SECRET, 32);
+assertSecretStrength("SESSION_SECRET", process.env.SESSION_SECRET, 16);
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET);
 
@@ -28,11 +37,20 @@ export function createAuthApp(): express.Application {
       secret: process.env.SESSION_SECRET!,
       resave: false,
       saveUninitialized: false,
-      cookie: { secure: BASE.startsWith("https"), httpOnly: true, maxAge: AUTH_CODE_TTL_SEC * 1000 },
+      cookie: {
+        secure: BASE.startsWith("https"),
+        httpOnly: true,
+        sameSite: "lax",
+        maxAge: AUTH_CODE_TTL_SEC * 1000,
+      },
     })
   );
   app.use(passportAuth.initialize());
   app.use(passportAuth.session());
+
+  const registerRateLimit = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
+  const authorizeRateLimit = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 60 });
+  const tokenRateLimit = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 30 });
 
   app.get("/.well-known/oauth-authorization-server", (_req, res) => {
     res.json({
@@ -41,7 +59,7 @@ export function createAuthApp(): express.Application {
       token_endpoint: `${BASE}/token`,
       userinfo_endpoint: `${BASE}/userinfo`,
       registration_endpoint: `${BASE}/register`,
-      scopes_supported: ["openid", "profile", "email", "default"],
+      scopes_supported: SUPPORTED_SCOPES,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
@@ -55,12 +73,12 @@ export function createAuthApp(): express.Application {
     res.json({
       resource: BASE,
       authorization_servers: [BASE],
-      scopes_supported: ["default"],
+      scopes_supported: [DEFAULT_SCOPE],
       bearer_methods_supported: ["header"],
     });
   });
 
-  app.post("/register", (req, res) => {
+  app.post("/register", registerRateLimit, (req, res) => {
     const {
       client_name,
       redirect_uris,
@@ -104,12 +122,12 @@ export function createAuthApp(): express.Application {
     });
   });
 
-  app.get("/authorize", (req, res, next) => {
+  app.get("/authorize", authorizeRateLimit, (req, res, next) => {
     const {
       response_type,
       client_id,
       redirect_uri,
-      scope,
+      scope: rawScope,
       state,
       code_challenge,
       code_challenge_method,
@@ -138,10 +156,17 @@ export function createAuthApp(): express.Application {
       return;
     }
 
+    const requestedScope = rawScope ?? DEFAULT_SCOPE;
+    const requestedScopes = parseRequestedScopes(requestedScope);
+    if (!requestedScopes.every((s) => SUPPORTED_SCOPES.includes(s))) {
+      res.status(400).json({ error: "invalid_scope" });
+      return;
+    }
+
     (req.session as unknown as Record<string, unknown>).oauth = {
       clientId: client_id,
       redirectUri: redirect_uri,
-      scope: scope ?? "default",
+      scope: requestedScopes.join(" "),
       state: state ?? null,
       codeChallenge: code_challenge,
       codeChallengeMethod: code_challenge_method,
@@ -178,13 +203,13 @@ export function createAuthApp(): express.Application {
         [oauth.clientId]
       );
       if (!clientRows.length || !clientRows[0].values.length) {
-        res.redirect(`${oauth.redirectUri}?error=invalid_client`);
+        res.redirect(`${BASE}/?error=invalid_client`);
         return;
       }
 
       const allowedUris: string[] = JSON.parse(clientRows[0].values[0][0] as string);
       if (!allowedUris.includes(oauth.redirectUri)) {
-        res.redirect(`${oauth.redirectUri}?error=invalid_redirect_uri`);
+        res.redirect(`${BASE}/?error=invalid_redirect_uri`);
         return;
       }
 
@@ -215,7 +240,7 @@ export function createAuthApp(): express.Application {
     }
   );
 
-  app.post("/token", async (req: Request, res: Response) => {
+  app.post("/token", tokenRateLimit, async (req: Request, res: Response) => {
     const {
       grant_type,
       code,
@@ -287,7 +312,7 @@ export function createAuthApp(): express.Application {
       db.run(
         `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, refresh_token_expires_at, issued_at)
          VALUES (?,?,?,?,?,?,?,?,?)`,
-        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(refreshToken), now + ACCESS_TOKEN_TTL_SEC, refreshExp, now]
+        [jti, client_id, userId, DEFAULT_SCOPE, hashToken(accessToken), hashToken(refreshToken), now + ACCESS_TOKEN_TTL_SEC, refreshExp, now]
       );
       saveDb();
 
@@ -296,7 +321,7 @@ export function createAuthApp(): express.Application {
         token_type: "Bearer",
         expires_in: ACCESS_TOKEN_TTL_SEC,
         refresh_token: refreshToken,
-        scope: "default",
+        scope: DEFAULT_SCOPE,
       });
       return;
     }
@@ -333,7 +358,7 @@ export function createAuthApp(): express.Application {
       db.run(
         `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, refresh_token_expires_at, issued_at)
          VALUES (?,?,?,?,?,?,?,?,?)`,
-        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(newRefreshToken), now + ACCESS_TOKEN_TTL_SEC, newRefreshExp, now]
+        [jti, client_id, userId, DEFAULT_SCOPE, hashToken(accessToken), hashToken(newRefreshToken), now + ACCESS_TOKEN_TTL_SEC, newRefreshExp, now]
       );
       saveDb();
 
@@ -342,7 +367,7 @@ export function createAuthApp(): express.Application {
         token_type: "Bearer",
         expires_in: ACCESS_TOKEN_TTL_SEC,
         refresh_token: newRefreshToken,
-        scope: "default",
+        scope: DEFAULT_SCOPE,
       });
       return;
     }
@@ -405,6 +430,7 @@ async function createAccessToken(jti: string, clientId: string, userId: string):
 
 export async function verifyAccessToken(token: string): Promise<jose.JWTPayload> {
   const { payload } = await jose.jwtVerify(token, JWT_SECRET, {
+    algorithms: ["HS256"],
     issuer: BASE,
     audience: BASE,
   });
@@ -468,4 +494,78 @@ async function resolveBearerAuth(authorization?: string): Promise<{ userId: stri
   }
 
   return { userId, jti };
+}
+
+function normalizeBaseUrl(raw: string): string {
+  let parsed: URL;
+  if (raw.startsWith("/")) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(`BASE_URL must be absolute in production, received: ${raw}`);
+    }
+    parsed = new URL(raw, "http://localhost:3000");
+  } else {
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`BASE_URL must be an absolute URL, received: ${raw}`);
+    }
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`BASE_URL must use http or https, received protocol: ${parsed.protocol}`);
+  }
+  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+    throw new Error("BASE_URL must use HTTPS in production");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function parseScopes(raw: string | undefined, fallback: string[]): string[] {
+  const parsed = raw?.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean) ?? fallback;
+  const deduped = Array.from(new Set(parsed));
+  if (!deduped.includes(DEFAULT_SCOPE)) deduped.push(DEFAULT_SCOPE);
+  return deduped;
+}
+
+function parseRequestedScopes(raw: string): string[] {
+  const scopes = raw.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+  return scopes.length ? scopes : [DEFAULT_SCOPE];
+}
+
+function createRateLimiter({
+  windowMs,
+  max,
+}: {
+  windowMs: number;
+  max: number;
+}): express.RequestHandler {
+  const counters = new Map<string, { count: number; resetAt: number }>();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${req.path}:${req.ip ?? "unknown"}`;
+    const existing = counters.get(key);
+    if (!existing || existing.resetAt <= now) {
+      counters.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+
+    if (existing.count >= max) {
+      const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+      res.setHeader("Retry-After", retryAfterSec.toString());
+      res.status(429).json({ error: "rate_limited", error_description: "Too many requests" });
+      return;
+    }
+
+    existing.count += 1;
+    next();
+  };
+}
+
+function assertSecretStrength(name: string, value: string | undefined, minLength: number): void {
+  if (!value) {
+    throw new Error(`${name} env var is required`);
+  }
+  if (value.length < minLength) {
+    throw new Error(`${name} must be at least ${minLength} characters long`);
+  }
 }

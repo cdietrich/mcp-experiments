@@ -9,7 +9,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 const PORT = Number(process.env.MCP_PORT ?? 3000);
-const BASE = process.env.BASE_URL ?? `http://localhost:${PORT}`;
+const BASE = normalizeBaseUrl(process.env.BASE_URL ?? `http://localhost:${PORT}`);
+const AUTH_ENABLED = process.env.AUTH_ENABLED !== "false";
+const CORS_ALLOWED_ORIGINS = resolveAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS, BASE);
 
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
 
@@ -26,10 +28,27 @@ async function main() {
   // Mount auth app first (brings in session, passport, and all auth routes)
   app.use(createAuthApp());
 
-  app.use(cors({
-    exposedHeaders: ["WWW-Authenticate", "Mcp-Session-Id", "Last-Event-Id", "Mcp-Protocol-Version"],
-    origin: "*",
-  }));
+  app.use(
+    cors({
+      exposedHeaders: ["WWW-Authenticate", "Mcp-Session-Id", "Last-Event-Id", "Mcp-Protocol-Version"],
+      credentials: false,
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        if (CORS_ALLOWED_ORIGINS.includes("*") && !AUTH_ENABLED) {
+          callback(null, true);
+          return;
+        }
+        if (CORS_ALLOWED_ORIGINS.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error("CORS origin denied"));
+      },
+    })
+  );
   app.use(express.json());
 
   const mcpPostHandler = async (req: express.Request, res: express.Response) => {
@@ -92,7 +111,7 @@ async function main() {
     await transports.get(sessionId)!.handleRequest(req, res);
   };
 
-  if (process.env.AUTH_ENABLED !== "false") {
+  if (AUTH_ENABLED) {
     app.post("/mcp", requireBearerAuth(), mcpPostHandler);
     app.get("/mcp", requireBearerAuth(), mcpSessionHandler);
     app.delete("/mcp", requireBearerAuth(), mcpSessionHandler);
@@ -125,3 +144,43 @@ main().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);
 });
+
+function normalizeBaseUrl(raw: string): string {
+  let parsed: URL;
+  if (raw.startsWith("/")) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(`BASE_URL must be absolute in production, received: ${raw}`);
+    }
+    parsed = new URL(raw, `http://localhost:${PORT}`);
+  } else {
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`BASE_URL must be an absolute URL, received: ${raw}`);
+    }
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`BASE_URL must use http or https, received protocol: ${parsed.protocol}`);
+  }
+  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+    throw new Error("BASE_URL must use HTTPS in production");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function resolveAllowedOrigins(raw: string | undefined, base: string): string[] {
+  if (!raw) {
+    return [new URL(base).origin];
+  }
+
+  const values = raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(values.map((value) => {
+    if (value === "*") return value;
+    const parsed = new URL(value);
+    return parsed.origin;
+  })));
+}

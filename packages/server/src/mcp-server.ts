@@ -213,11 +213,15 @@ export function createMcpServer(): McpServer {
     },
     async ({ table, id }): Promise<CallToolResult> => {
       const db = getDb();
-      const allowedTables = ["vendor_bills", "expense_reports", "sales_orders"];
-      if (!allowedTables.includes(table)) {
+      const queries = {
+        vendor_bills: "SELECT * FROM vendor_bills WHERE id = ?",
+        expense_reports: "SELECT * FROM expense_reports WHERE id = ?",
+        sales_orders: "SELECT * FROM sales_orders WHERE id = ?",
+      } as const;
+      if (!(table in queries)) {
         return { content: [{ type: "text", text: `Unknown table: ${table}` }], isError: true };
       }
-      const rows = db.exec(`SELECT * FROM ${table} WHERE id = ?`, [id]);
+      const rows = db.exec(queries[table as keyof typeof queries], [id]);
       if (!rows.length || !rows[0].values.length) {
         return { content: [{ type: "text", text: `Record not found: ${id} in ${table}` }], isError: true };
       }

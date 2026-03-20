@@ -1,0 +1,12 @@
+{
+  "name": "ERP Data Warehouse",
+  "description": "Query vendor bills, expense reports, and sales orders from a fake ERP/data warehouse.",
+  "auth": {
+    "type": "oauth",
+    "client_name": "Claude",
+    "scope": "default",
+    "authorization_url": "http://localhost:3000/authorize",
+    "token_url": "http://localhost:3000/token"
+  },
+  "url": "http://localhost:3000/mcp"
+}

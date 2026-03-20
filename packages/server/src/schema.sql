@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   refresh_token_hash TEXT,
   token_type TEXT NOT NULL DEFAULT 'Bearer',
   expires_at INTEGER NOT NULL,
+  refresh_token_expires_at INTEGER,
   issued_at INTEGER NOT NULL,
   FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id),
   FOREIGN KEY (user_id) REFERENCES users(id)

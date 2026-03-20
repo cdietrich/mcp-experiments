@@ -20,7 +20,7 @@ packages/client/         MCP client example + Claude Desktop connector manifest
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - [ngrok](https://ngrok.com) — Claude Desktop's connector flow requires a publicly accessible URL (Anthropic's servers validate the MCP URL, so `localhost` is rejected)
 
 ```bash

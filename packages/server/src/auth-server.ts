@@ -8,9 +8,10 @@ import { passport as passportAuth, setupGoogleStrategy } from "./google-strategy
 
 const BASE = process.env.BASE_URL ?? "http://localhost:3000";
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET ?? "dev-secret-change-in-production-min-32-chars"
-);
+if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET env var is required — set it in packages/server/.env");
+if (!process.env.SESSION_SECRET) throw new Error("SESSION_SECRET env var is required — set it in packages/server/.env");
+
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET);
 
 const ACCESS_TOKEN_TTL_SEC = 3600;
 const REFRESH_TOKEN_TTL_SEC = 604800;
@@ -24,10 +25,10 @@ export function createAuthApp(): express.Application {
   app.use(express.urlencoded({ extended: true }));
   app.use(
     session({
-      secret: process.env.SESSION_SECRET ?? "dev-session-secret-change-in-production",
+      secret: process.env.SESSION_SECRET!,
       resave: false,
       saveUninitialized: false,
-      cookie: { secure: false, httpOnly: true, maxAge: AUTH_CODE_TTL_SEC * 1000 },
+      cookie: { secure: BASE.startsWith("https"), httpOnly: true, maxAge: AUTH_CODE_TTL_SEC * 1000 },
     })
   );
   app.use(passportAuth.initialize());
@@ -130,6 +131,10 @@ export function createAuthApp(): express.Application {
       return;
     }
 
+    // NOTE: PKCE (code_challenge) is not required here. OAuth 2.1 recommends requiring
+    // it for all public clients, but our only client (Claude Desktop) already sends it.
+    // Enforce if adding other client types.
+
     (req.session as unknown as Record<string, unknown>).oauth = {
       clientId: client_id,
       redirectUri: redirect_uri,
@@ -220,6 +225,10 @@ export function createAuthApp(): express.Application {
 
     const db = getDb();
 
+    // NOTE: client_secret is not validated here. The metadata advertises client_secret_basic,
+    // but Claude Desktop uses public client DCR and never sends a secret.
+    // Add client auth validation here if supporting confidential clients beyond DCR.
+
     if (grant_type === "authorization_code") {
       if (!code || !client_id || !redirect_uri) {
         res.status(400).json({ error: "invalid_request" });
@@ -276,9 +285,9 @@ export function createAuthApp(): express.Application {
       const refreshExp = now + REFRESH_TOKEN_TTL_SEC;
 
       db.run(
-        `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, issued_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(refreshToken), now + ACCESS_TOKEN_TTL_SEC, now]
+        `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, refresh_token_expires_at, issued_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(refreshToken), now + ACCESS_TOKEN_TTL_SEC, refreshExp, now]
       );
       saveDb();
 
@@ -299,14 +308,19 @@ export function createAuthApp(): express.Application {
       }
       const refreshHash = hashToken(refresh_token);
       const tokenRows = db.exec(
-        `SELECT jti, user_id FROM oauth_tokens WHERE refresh_token_hash = ? AND client_id = ?`,
+        `SELECT jti, user_id, refresh_token_expires_at FROM oauth_tokens WHERE refresh_token_hash = ? AND client_id = ?`,
         [refreshHash, client_id]
       );
       if (!tokenRows.length || !tokenRows[0].values.length) {
         res.status(400).json({ error: "invalid_grant" });
         return;
       }
-      const [oldJti, userId] = tokenRows[0].values[0] as [string, string];
+      const [oldJti, userId, refreshTokenExpiresAt] = tokenRows[0].values[0] as [string, string, number];
+
+      if (Date.now() / 1000 > refreshTokenExpiresAt) {
+        res.status(400).json({ error: "invalid_grant", error_description: "Refresh token expired" });
+        return;
+      }
 
       db.run("DELETE FROM oauth_tokens WHERE jti = ?", [oldJti]);
 
@@ -314,11 +328,12 @@ export function createAuthApp(): express.Application {
       const now = Math.floor(Date.now() / 1000);
       const accessToken = await createAccessToken(jti, client_id, userId);
       const newRefreshToken = randomUUID();
+      const newRefreshExp = now + REFRESH_TOKEN_TTL_SEC;
 
       db.run(
-        `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, issued_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(newRefreshToken), now + ACCESS_TOKEN_TTL_SEC, now]
+        `INSERT INTO oauth_tokens (jti, client_id, user_id, scope, access_token_hash, refresh_token_hash, expires_at, refresh_token_expires_at, issued_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [jti, client_id, userId, "default", hashToken(accessToken), hashToken(newRefreshToken), now + ACCESS_TOKEN_TTL_SEC, newRefreshExp, now]
       );
       saveDb();
 
@@ -366,6 +381,10 @@ export function createAuthApp(): express.Application {
   return app;
 }
 
+// NOTE: token revocation (/revoke) deletes the DB row by jti, but bearer auth below
+// only checks the JWT signature — revoked tokens remain valid until exp (1h TTL).
+// To enforce immediate revocation, add a DB jti lookup here. Skipped due to
+// per-request DB overhead; acceptable given the short access token TTL.
 export function bearerAuth(req: Request, _res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer ")) {
@@ -413,7 +432,7 @@ export function requireBearerAuth(requiredScopes: string[] = []) {
     if (!auth?.startsWith("Bearer ")) {
       res.setHeader("WWW-Authenticate", `Bearer realm="${BASE}", authorization-server="${BASE}/.well-known/oauth-authorization-server"`);
       res.status(401).json({
-        error: " unauthorized",
+        error: "unauthorized",
         error_description: "Bearer token required",
       });
       return;

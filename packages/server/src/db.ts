@@ -26,6 +26,13 @@ export async function initDb(): Promise<Database> {
   const schema = readFileSync(join(__dirname, "schema.sql"), "utf-8");
   _db.run(schema);
 
+  // Migrations for existing databases
+  try {
+    _db.run("ALTER TABLE oauth_tokens ADD COLUMN refresh_token_expires_at INTEGER");
+  } catch {
+    // Column already exists
+  }
+
   seedData(_db);
 
   saveDb();

@@ -45,7 +45,7 @@ export function createAuthApp(): express.Application {
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none", "client_secret_basic"],
+      token_endpoint_auth_methods_supported: ["none"],
       revocation_endpoint: `${BASE}/revoke`,
       service_documentation: `${BASE}/.well-known/oauth-protected-resource`,
     });
@@ -126,22 +126,26 @@ export function createAuthApp(): express.Application {
       return;
     }
 
-    if (code_challenge_method && code_challenge_method !== "S256") {
-      res.status(400).json({ error: "invalid_request", error_description: "code_challenge_method must be S256" });
+    if (!code_challenge || !code_challenge_method) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "code_challenge and code_challenge_method are required",
+      });
       return;
     }
 
-    // NOTE: PKCE (code_challenge) is not required here. OAuth 2.1 recommends requiring
-    // it for all public clients, but our only client (Claude Desktop) already sends it.
-    // Enforce if adding other client types.
+    if (code_challenge_method !== "S256") {
+      res.status(400).json({ error: "invalid_request", error_description: "code_challenge_method must be S256" });
+      return;
+    }
 
     (req.session as unknown as Record<string, unknown>).oauth = {
       clientId: client_id,
       redirectUri: redirect_uri,
       scope: scope ?? "default",
       state: state ?? null,
-      codeChallenge: code_challenge ?? null,
-      codeChallengeMethod: code_challenge_method ?? null,
+      codeChallenge: code_challenge,
+      codeChallengeMethod: code_challenge_method,
     };
 
     passportAuth.authenticate("google", {
@@ -217,17 +221,12 @@ export function createAuthApp(): express.Application {
       grant_type,
       code,
       client_id,
-      client_secret,
       redirect_uri,
       code_verifier,
       refresh_token,
     } = req.body as Record<string, string | undefined>;
 
     const db = getDb();
-
-    // NOTE: client_secret is not validated here. The metadata advertises client_secret_basic,
-    // but Claude Desktop uses public client DCR and never sends a secret.
-    // Add client auth validation here if supporting confidential clients beyond DCR.
 
     if (grant_type === "authorization_code") {
       if (!code || !client_id || !redirect_uri) {
@@ -264,16 +263,18 @@ export function createAuthApp(): express.Application {
         return;
       }
 
-      if (dbCodeChallenge && dbCodeChallengeMethod === "S256") {
-        if (!code_verifier) {
-          res.status(400).json({ error: "invalid_request", error_description: "code_verifier required for PKCE" });
-          return;
-        }
-        const expected = base64urlEncode(createHash("sha256").update(code_verifier).digest());
-        if (expected !== dbCodeChallenge) {
-          res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
-          return;
-        }
+      if (!dbCodeChallenge || dbCodeChallengeMethod !== "S256") {
+        res.status(400).json({ error: "invalid_grant", error_description: "PKCE challenge missing on authorization code" });
+        return;
+      }
+      if (!code_verifier) {
+        res.status(400).json({ error: "invalid_request", error_description: "code_verifier required for PKCE" });
+        return;
+      }
+      const expected = base64urlEncode(createHash("sha256").update(code_verifier).digest());
+      if (expected !== dbCodeChallenge) {
+        res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
+        return;
       }
 
       db.run("UPDATE oauth_codes SET used = 1 WHERE code = ?", [code]);
@@ -381,10 +382,6 @@ export function createAuthApp(): express.Application {
   return app;
 }
 
-// NOTE: token revocation (/revoke) deletes the DB row by jti, but bearer auth below
-// only checks the JWT signature — revoked tokens remain valid until exp (1h TTL).
-// To enforce immediate revocation, add a DB jti lookup here. Skipped due to
-// per-request DB overhead; acceptable given the short access token TTL.
 export function bearerAuth(req: Request, _res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer ")) {
@@ -395,10 +392,14 @@ export function bearerAuth(req: Request, _res: Response, next: NextFunction) {
 
   const token = auth.slice(7);
   verifyAccessToken(token)
-    .then((payload) => {
+    .then(async (payload) => {
+      const jti = payload.jti as string | undefined;
+      if (!jti || !(await isTokenActive(jti))) {
+        throw new Error("inactive_token");
+      }
       (req as Request & { auth?: { userId: string; jti: string } }).auth = {
         userId: payload.sub as string,
-        jti: payload.jti as string,
+        jti,
       };
       next();
     })
@@ -438,10 +439,14 @@ export function requireBearerAuth(requiredScopes: string[] = []) {
       return;
     }
     verifyAccessToken(auth.slice(7))
-      .then((payload) => {
+      .then(async (payload) => {
+        const jti = payload.jti as string | undefined;
+        if (!jti || !(await isTokenActive(jti))) {
+          throw new Error("inactive_token");
+        }
         (req as Request & { auth?: { userId: string; jti: string } }).auth = {
           userId: payload.sub as string,
-          jti: payload.jti as string,
+          jti,
         };
         next();
       })
@@ -458,4 +463,14 @@ function hashToken(token: string): string {
 
 function base64urlEncode(buffer: Buffer): string {
   return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+async function isTokenActive(jti: string): Promise<boolean> {
+  const db = getDb();
+  const rows = db.exec("SELECT expires_at FROM oauth_tokens WHERE jti = ?", [jti]);
+  if (!rows.length || !rows[0].values.length) {
+    return false;
+  }
+  const expiresAt = Number(rows[0].values[0][0]);
+  return Date.now() / 1000 <= expiresAt;
 }

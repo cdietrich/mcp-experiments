@@ -78,7 +78,6 @@ export function createAuthApp(): express.Application {
 
     const uris = Array.isArray(redirect_uris) ? redirect_uris : [redirect_uris];
     const clientId = randomUUID();
-    const clientSecret = randomUUID();
 
     const db = getDb();
     db.run(
@@ -86,7 +85,7 @@ export function createAuthApp(): express.Application {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         clientId,
-        hashToken(clientSecret),
+        null,
         client_name,
         JSON.stringify(uris),
         JSON.stringify(grant_types),
@@ -98,7 +97,7 @@ export function createAuthApp(): express.Application {
 
     res.json({
       client_id: clientId,
-      client_secret: clientSecret,
+      token_endpoint_auth_method: "none",
       client_name,
       redirect_uris: uris,
       grant_types,
@@ -383,24 +382,9 @@ export function createAuthApp(): express.Application {
 }
 
 export function bearerAuth(req: Request, _res: Response, next: NextFunction) {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) {
-    (req as Request & { auth?: null }).auth = null;
-    next();
-    return;
-  }
-
-  const token = auth.slice(7);
-  verifyAccessToken(token)
-    .then(async (payload) => {
-      const jti = payload.jti as string | undefined;
-      if (!jti || !(await isTokenActive(jti))) {
-        throw new Error("inactive_token");
-      }
-      (req as Request & { auth?: { userId: string; jti: string } }).auth = {
-        userId: payload.sub as string,
-        jti,
-      };
+  resolveBearerAuth(req.headers.authorization)
+    .then((auth) => {
+      (req as Request & { auth?: { userId: string; jti: string } | null }).auth = auth;
       next();
     })
     .catch(() => {
@@ -438,16 +422,12 @@ export function requireBearerAuth(requiredScopes: string[] = []) {
       });
       return;
     }
-    verifyAccessToken(auth.slice(7))
-      .then(async (payload) => {
-        const jti = payload.jti as string | undefined;
-        if (!jti || !(await isTokenActive(jti))) {
-          throw new Error("inactive_token");
+    resolveBearerAuth(auth)
+      .then((authCtx) => {
+        if (!authCtx) {
+          throw new Error("invalid_token");
         }
-        (req as Request & { auth?: { userId: string; jti: string } }).auth = {
-          userId: payload.sub as string,
-          jti,
-        };
+        (req as Request & { auth?: { userId: string; jti: string } }).auth = authCtx;
         next();
       })
       .catch(() => {
@@ -473,4 +453,19 @@ async function isTokenActive(jti: string): Promise<boolean> {
   }
   const expiresAt = Number(rows[0].values[0][0]);
   return Date.now() / 1000 <= expiresAt;
+}
+
+async function resolveBearerAuth(authorization?: string): Promise<{ userId: string; jti: string } | null> {
+  if (!authorization?.startsWith("Bearer ")) {
+    return null;
+  }
+
+  const payload = await verifyAccessToken(authorization.slice(7));
+  const jti = payload.jti as string | undefined;
+  const userId = payload.sub as string | undefined;
+  if (!jti || !userId || !(await isTokenActive(jti))) {
+    return null;
+  }
+
+  return { userId, jti };
 }

@@ -44,10 +44,18 @@ const ACCESS_TOKEN_TTL_SEC = 3600;
 const REFRESH_TOKEN_TTL_SEC = 604800;
 const AUTH_CODE_TTL_SEC = 600;
 
-const oauthProvider = createOAuthProvider();
+let oauthProvider: OAuthServerProvider | null = null;
+
+function getOAuthProvider(): OAuthServerProvider {
+  if (!oauthProvider) {
+    oauthProvider = createOAuthProvider();
+  }
+  return oauthProvider;
+}
 
 export function createAuthApp(): express.Application {
   setupGoogleStrategy();
+  const provider = getOAuthProvider();
 
   const app = express();
   app.set("trust proxy", 1);
@@ -71,12 +79,12 @@ export function createAuthApp(): express.Application {
 
   app.use(
     mcpAuthRouter({
-      provider: oauthProvider,
+      provider,
       issuerUrl: new URL(BASE),
       baseUrl: new URL(BASE),
       resourceServerUrl: new URL(`${BASE}/mcp`),
       scopesSupported: SUPPORTED_SCOPES,
-      serviceDocumentationUrl: new URL(`${BASE}/.well-known/oauth-protected-resource`),
+      serviceDocumentationUrl: new URL(`${BASE}/.well-known/oauth-protected-resource/mcp`),
       tokenOptions: {
         rateLimit: { windowMs: 10 * 60 * 1000, max: 30 },
       },
@@ -120,7 +128,7 @@ export function createAuthApp(): express.Application {
       }
 
       try {
-        const client = await oauthProvider.clientsStore.getClient(oauth.clientId);
+        const client = await provider.clientsStore.getClient(oauth.clientId);
         if (!client) {
           res.redirect(`${BASE}/?error=invalid_client`);
           return;
@@ -215,7 +223,7 @@ export async function verifyAccessToken(token: string): Promise<jose.JWTPayload>
 
 export function requireBearerAuth(requiredScopes: string[] = []) {
   return sdkRequireBearerAuth({
-    verifier: oauthProvider,
+    verifier: getOAuthProvider(),
     requiredScopes,
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(`${BASE}/mcp`)),
   });
@@ -300,14 +308,6 @@ function createOAuthProvider(): OAuthServerProvider {
       const state = params.state ?? null;
       const scope = (params.scopes && params.scopes.length > 0 ? params.scopes : [DEFAULT_SCOPE]).join(" ");
 
-      (req.session as unknown as Record<string, unknown>).oauth = {
-        clientId: client.client_id,
-        redirectUri: params.redirectUri,
-        scope,
-        state,
-        codeChallenge: params.codeChallenge,
-      };
-
       if (req.user && (req.user as { id?: string }).id) {
         const user = req.user as { id: string };
         const code = randomUUID();
@@ -337,6 +337,15 @@ function createOAuthProvider(): OAuthServerProvider {
         res.redirect(redirect.toString());
         return;
       }
+
+      // Persist authorization request context only when we need to round-trip through Google login.
+      (req.session as unknown as Record<string, unknown>).oauth = {
+        clientId: client.client_id,
+        redirectUri: params.redirectUri,
+        scope,
+        state,
+        codeChallenge: params.codeChallenge,
+      };
 
       passportAuth.authenticate("google", {
         scope: ["openid", "email", "profile"],
@@ -560,7 +569,7 @@ async function resolveBearerAuth(authorization?: string): Promise<{ userId: stri
   }
 
   const token = authorization.slice(7);
-  const authInfo = await oauthProvider.verifyAccessToken(token);
+  const authInfo = await getOAuthProvider().verifyAccessToken(token);
   const userId = authInfo.extra?.userId;
   const jti = authInfo.extra?.jti;
 
@@ -572,6 +581,8 @@ async function resolveBearerAuth(authorization?: string): Promise<{ userId: stri
 }
 
 function bearerTokenRevokeFallback(req: Request, res: Response, next: NextFunction) {
+  // Compatibility behavior: non-bearer callers are intentionally treated as a no-op
+  // and fall through to the route handler, which returns `{}`.
   if (!req.headers.authorization?.startsWith("Bearer ")) {
     next();
     return;

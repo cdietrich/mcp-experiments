@@ -132,3 +132,9 @@ npm run dev:server   # Start server with hot reload
 npm run typecheck    # TypeScript type checking
 npm run build        # Compile TypeScript
 ```
+
+
+```
+npm run dev --workspace=@mcp-experiment/server
+ngrok http http://localhost:3000
+```

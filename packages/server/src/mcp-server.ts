@@ -240,6 +240,9 @@ export function createMcpServer(): McpServer {
     }
   );
 
+  // NOTE:
+  // Some MCP clients (including Claude.ai's MCP connector at time of writing) expose
+  // tools but not resources. Keep equivalent read access available via tools for those clients.
   server.registerResource(
     "vendor-bills-list",
     "erp://vendor-bills",
@@ -260,6 +263,9 @@ export function createMcpServer(): McpServer {
     }
   );
 
+  // NOTE:
+  // Some MCP clients (including Claude.ai's MCP connector at time of writing) expose
+  // tools but not resources. Keep equivalent read access available via tools for those clients.
   server.registerResource(
     "expense-reports-list",
     "erp://expense-reports",
@@ -280,6 +286,9 @@ export function createMcpServer(): McpServer {
     }
   );
 
+  // NOTE:
+  // Some MCP clients (including Claude.ai's MCP connector at time of writing) expose
+  // tools but not resources. Keep equivalent read access available via tools for those clients.
   server.registerResource(
     "sales-orders-list",
     "erp://sales-orders",
@@ -300,6 +309,9 @@ export function createMcpServer(): McpServer {
     }
   );
 
+  // NOTE:
+  // Some MCP clients (including Claude.ai's MCP connector at time of writing) expose
+  // tools but not prompt templates. Keep prompt-driven workflows possible via tools when needed.
   server.registerPrompt(
     "summarize-expenses",
     {

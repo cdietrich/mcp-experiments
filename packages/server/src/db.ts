@@ -4,6 +4,10 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
 
+/**
+ * sql.js-backed datastore persisted to `packages/data/erp.db`.
+ * The database is loaded once per process and reused through `getDb()`.
+ */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "..", "data");
 const DB_PATH = join(DATA_DIR, "erp.db");
@@ -26,7 +30,7 @@ export async function initDb(): Promise<Database> {
   const schema = readFileSync(join(__dirname, "schema.sql"), "utf-8");
   _db.run(schema);
 
-  // Migrations for existing databases
+  // Lightweight migration for existing databases created before refresh token expiry support.
   try {
     _db.run("ALTER TABLE oauth_tokens ADD COLUMN refresh_token_expires_at INTEGER");
   } catch {
@@ -50,6 +54,7 @@ export function saveDb(): void {
 }
 
 function seedData(db: Database): void {
+  // Seed sample ERP rows once so MCP tools have useful data in local development.
   const now = Math.floor(Date.now() / 1000);
 
   const hasData = db.exec("SELECT COUNT(*) FROM vendor_bills")[0]?.values[0]?.[0];

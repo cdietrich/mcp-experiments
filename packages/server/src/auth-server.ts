@@ -6,6 +6,13 @@ import passport from "passport";
 import { getDb, saveDb } from "./db.js";
 import { passport as passportAuth, setupGoogleStrategy } from "./google-strategy.js";
 
+/**
+ * OAuth 2.1 style authorization server for local MCP protection.
+ * Uses:
+ * - Google login for end-user authentication
+ * - PKCE authorization code flow for public clients
+ * - Signed JWT access tokens plus stored refresh tokens
+ */
 const BASE = normalizeBaseUrl(process.env.BASE_URL ?? "http://localhost:3000");
 const DEFAULT_SCOPE = process.env.DEFAULT_SCOPE ?? "default";
 const SUPPORTED_SCOPES = parseScopes(process.env.SUPPORTED_SCOPES, [
@@ -27,6 +34,7 @@ const REFRESH_TOKEN_TTL_SEC = 604800;
 const AUTH_CODE_TTL_SEC = 600;
 
 export function createAuthApp(): express.Application {
+  // Registers passport Google strategy when credentials are configured.
   setupGoogleStrategy();
   const app = express();
   app.set("trust proxy", 1);
@@ -79,6 +87,7 @@ export function createAuthApp(): express.Application {
   });
 
   app.post("/register", registerRateLimit, (req, res) => {
+    // Minimal dynamic client registration for development/public clients.
     const {
       client_name,
       redirect_uris,
@@ -123,6 +132,7 @@ export function createAuthApp(): express.Application {
   });
 
   app.get("/authorize", authorizeRateLimit, (req, res, next) => {
+    // Validates OAuth + PKCE params, then delegates login to Google.
     const {
       response_type,
       client_id,
@@ -183,6 +193,7 @@ export function createAuthApp(): express.Application {
     "/auth/google/callback",
     passportAuth.authenticate("google", { failureRedirect: `${BASE}/?error=auth_failed`, keepSessionInfo: true }),
     async (req: Request, res: Response) => {
+      // After Google login, mint a short-lived authorization code and redirect.
       const oauth = (req.session as unknown as Record<string, unknown>).oauth as {
         clientId: string;
         redirectUri: string;
@@ -253,6 +264,7 @@ export function createAuthApp(): express.Application {
     const db = getDb();
 
     if (grant_type === "authorization_code") {
+      // Exchange authorization code (+ PKCE verifier) for access/refresh tokens.
       if (!code || !client_id || !redirect_uri) {
         res.status(400).json({ error: "invalid_request" });
         return;
@@ -327,6 +339,7 @@ export function createAuthApp(): express.Application {
     }
 
     if (grant_type === "refresh_token") {
+      // Rotate refresh token and issue a fresh access token.
       if (!refresh_token || !client_id) {
         res.status(400).json({ error: "invalid_request" });
         return;
@@ -407,6 +420,7 @@ export function createAuthApp(): express.Application {
 }
 
 export function bearerAuth(req: Request, _res: Response, next: NextFunction) {
+  // Soft auth: attaches auth context when valid, does not reject on failure.
   resolveBearerAuth(req.headers.authorization)
     .then((auth) => {
       (req as Request & { auth?: { userId: string; jti: string } | null }).auth = auth;
@@ -439,6 +453,7 @@ export async function verifyAccessToken(token: string): Promise<jose.JWTPayload>
 
 export function requireBearerAuth(requiredScopes: string[] = []) {
   return (req: Request, res: Response, next: NextFunction) => {
+    // Hard auth: enforces Bearer token and returns OAuth-compatible 401 responses.
     const auth = req.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       res.setHeader("WWW-Authenticate", `Bearer realm="${BASE}", authorization-server="${BASE}/.well-known/oauth-authorization-server"`);
@@ -450,6 +465,8 @@ export function requireBearerAuth(requiredScopes: string[] = []) {
     }
     resolveBearerAuth(auth)
       .then((authCtx) => {
+        // Scope enforcement can be added here when scope-specific routes are introduced.
+        void requiredScopes;
         if (!authCtx) {
           throw new Error("invalid_token");
         }

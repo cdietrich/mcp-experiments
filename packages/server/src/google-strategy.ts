@@ -3,6 +3,11 @@ import { Strategy as GoogleOAuth2Strategy } from "passport-google-oauth20";
 import { getDb } from "./db.js";
 import { randomUUID } from "crypto";
 
+/**
+ * Configures Passport Google OAuth strategy and user serialization hooks.
+ * If Google credentials are missing, authentication endpoints remain mounted
+ * but login cannot be completed.
+ */
 export function setupGoogleStrategy() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -24,6 +29,7 @@ export function setupGoogleStrategy() {
         userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
       },
       async (_accessToken, _refreshToken, profile, done) => {
+        // Find or create local user mapped to Google subject ID.
         const db = getDb();
         const now = Math.floor(Date.now() / 1000);
         const googleId = profile.id;

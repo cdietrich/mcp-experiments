@@ -8,6 +8,13 @@ import { createAuthApp, requireBearerAuth } from "./auth-server.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * HTTP entrypoint that hosts:
+ * - OAuth metadata and token routes (mounted from auth-server.ts)
+ * - Streamable HTTP MCP endpoint at /mcp
+ *
+ * Each MCP session gets its own transport instance keyed by `mcp-session-id`.
+ */
 const PORT = Number(process.env.MCP_PORT ?? 3000);
 const BASE = normalizeBaseUrl(process.env.BASE_URL ?? `http://localhost:${PORT}`);
 const AUTH_ENABLED = process.env.AUTH_ENABLED !== "false";
@@ -52,6 +59,7 @@ async function main() {
   app.use(express.json());
 
   const mcpPostHandler = async (req: express.Request, res: express.Response) => {
+    // Existing session: route request to the live transport.
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (sessionId && transports.has(sessionId)) {
@@ -69,6 +77,7 @@ async function main() {
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
+      // New initialize request: create a transport and bind it to this session.
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
@@ -99,6 +108,7 @@ async function main() {
   };
 
   const mcpSessionHandler = async (req: express.Request, res: express.Response) => {
+    // GET/DELETE requests must target an existing MCP session.
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (!sessionId) {
       res.status(400).send("Missing session ID");
@@ -146,6 +156,7 @@ main().catch((err) => {
 });
 
 function normalizeBaseUrl(raw: string): string {
+  // Supports absolute URL in all environments, and relative only in local development.
   let parsed: URL;
   if (raw.startsWith("/")) {
     if (process.env.NODE_ENV === "production") {
@@ -169,6 +180,7 @@ function normalizeBaseUrl(raw: string): string {
 }
 
 function resolveAllowedOrigins(raw: string | undefined, base: string): string[] {
+  // If unset, allow same-origin only.
   if (!raw) {
     return [new URL(base).origin];
   }

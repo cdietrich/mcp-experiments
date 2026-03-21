@@ -3,6 +3,12 @@ import { z } from "zod/v4";
 import { getDb } from "./db.js";
 import type { CallToolResult, GetPromptResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * MCP capability registration:
+ * - Tools: query ERP rows with optional filters
+ * - Resources: list snapshots for core entities
+ * - Prompts: helper prompt templates for analysis tasks
+ */
 export function createMcpServer(): McpServer {
   const server = new McpServer(
     {
@@ -34,6 +40,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ vendor_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
       const params: (string | number | null)[] = [];
@@ -95,6 +102,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ employee_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
       const params: (string | number | null)[] = [];
@@ -156,6 +164,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ customer_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
       const params: (string | number | null)[] = [];

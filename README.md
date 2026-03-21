@@ -11,7 +11,7 @@ packages/server/          MCP + OAuth auth server (single Express app, one port)
     schema.sql           Tables: users, oauth_clients, oauth_codes,
                          oauth_tokens, vendor_bills, expense_reports, sales_orders
     google-strategy.ts   Passport Google OAuth2 strategy
-    auth-server.ts       OAuth 2.1 server (DCR, PKCE, JWT tokens)
+    auth-server.ts       OAuth 2.1 server (SDK auth router + Google bridge + JWT tokens)
     mcp-server.ts        MCP server (tools, resources, prompts)
     index.ts             Main entry — mounts auth + MCP on a single port
 
@@ -116,7 +116,7 @@ Claude Desktop will open a browser to complete Google OAuth. After login, the co
 ## OAuth 2.1 flow (how it works)
 
 1. Client hits `/mcp` without a token → server returns `401 + WWW-Authenticate`
-2. Client fetches `/.well-known/oauth-protected-resource` → discovers auth server URL
+2. Client fetches `/.well-known/oauth-protected-resource/mcp` → discovers auth server URL
 3. Client fetches `/.well-known/oauth-authorization-server` → discovers endpoints
 4. Client does Dynamic Client Registration (`POST /register`)
 5. Client redirects to `/authorize` → browser opens Google SSO

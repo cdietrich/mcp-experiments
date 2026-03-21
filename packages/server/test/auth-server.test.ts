@@ -57,9 +57,9 @@ afterEach(() => {
 });
 
 describe("auth server regressions", () => {
-  it("advertises only supported token endpoint auth methods", async () => {
+  it("advertises SDK-supported token endpoint auth methods", async () => {
     const response = await request(app).get("/.well-known/oauth-authorization-server").expect(200);
-    expect(response.body.token_endpoint_auth_methods_supported).toEqual(["none"]);
+    expect(response.body.token_endpoint_auth_methods_supported).toEqual(["client_secret_post", "none"]);
   });
 
   it("registers public clients without issuing a client_secret", async () => {
@@ -68,8 +68,9 @@ describe("auth server regressions", () => {
       .send({
         client_name: "Test DCR Client",
         redirect_uris: ["https://client.example/callback"],
+        token_endpoint_auth_method: "none",
       })
-      .expect(200);
+      .expect(201);
 
     expect(response.body.client_id).toBeTypeOf("string");
     expect(response.body.token_endpoint_auth_method).toBe("none");
@@ -79,17 +80,29 @@ describe("auth server regressions", () => {
   });
 
   it("requires PKCE params on /authorize", async () => {
+    const db = dbModule.getDb();
+    const clientId = `test-client-${randomUUID()}`;
+    const redirectUri = "https://client.example/callback";
+    const now = nowSec();
+    db.run(
+      "INSERT INTO oauth_clients (client_id, client_secret_hash, client_name, redirect_uris, grant_types, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+      [clientId, null, "Authorize Test Client", JSON.stringify([redirectUri]), JSON.stringify(["authorization_code"]), now, now]
+    );
+    created.clients.add(clientId);
+    dbModule.saveDb();
+
     const response = await request(app)
       .get("/authorize")
       .query({
         response_type: "code",
-        client_id: "client-a",
-        redirect_uri: "https://client.example/callback",
+        client_id: clientId,
+        redirect_uri: redirectUri,
       })
-      .expect(400);
+      .expect(302);
 
-    expect(response.body.error).toBe("invalid_request");
-    expect(response.body.error_description).toContain("code_challenge");
+    const redirect = new URL(response.headers.location as string);
+    expect(redirect.searchParams.get("error")).toBe("invalid_request");
+    expect(redirect.searchParams.get("error_description")).toContain("code_challenge");
   });
 
   it("rejects authorization codes that do not carry PKCE metadata", async () => {
@@ -130,6 +143,7 @@ describe("auth server regressions", () => {
         code,
         client_id: clientId,
         redirect_uri: redirectUri,
+        code_verifier: "verifier-value",
       })
       .expect(400);
 

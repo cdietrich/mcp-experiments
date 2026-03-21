@@ -8,7 +8,8 @@ This package runs an MCP server over HTTP and optionally protects it with an OAu
 - `GET /mcp`: MCP stream/session follow-up requests
 - `DELETE /mcp`: MCP session cleanup requests
 - `/.well-known/oauth-authorization-server`: OAuth metadata
-- `/.well-known/oauth-protected-resource`: resource metadata for MCP clients
+- `/.well-known/oauth-protected-resource/mcp`: RFC 9728 resource metadata for the MCP endpoint
+- `/.well-known/oauth-protected-resource`: backward-compatible metadata alias
 - `/register`: dynamic client registration
 - `/authorize`: starts authorization-code + PKCE flow
 - `/auth/google/callback`: Google OAuth callback
@@ -20,7 +21,7 @@ This package runs an MCP server over HTTP and optionally protects it with an OAu
 ## Architecture
 
 - HTTP transport and route wiring are in `src/index.ts`.
-- OAuth/auth logic is in `src/auth-server.ts`.
+- OAuth/auth logic is in `src/auth-server.ts` and is wired with MCP SDK auth router/middleware.
 - Google strategy setup is in `src/google-strategy.ts`.
 - MCP tools/resources/prompts are registered in `src/mcp-server.ts`.
 - Data loading, persistence, and seed setup are in `src/db.ts`.
@@ -36,12 +37,12 @@ This package runs an MCP server over HTTP and optionally protects it with an OAu
 
 ## Authentication Model
 
-- `AUTH_ENABLED=true` (default): `/mcp` requires bearer token (`requireBearerAuth()`).
+- `AUTH_ENABLED=true` (default): `/mcp` requires bearer token (`requireBearerAuth()` from MCP SDK middleware).
 - User identity comes from Google login (`passport-google-oauth20`).
 - Token minting uses authorization-code flow with required PKCE (`S256`).
 - Access tokens are JWTs signed with `JWT_SECRET`.
 - Refresh tokens are random opaque values hashed before DB storage.
-- Revocation removes token rows from `oauth_tokens`.
+- Bearer-authenticated `/revoke` remains available for local compatibility and removes current token rows from `oauth_tokens`.
 
 ## Data Storage
 

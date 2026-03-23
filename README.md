@@ -15,7 +15,7 @@ packages/server/          MCP + OAuth auth server (single Express app, one port)
     mcp-server.ts        MCP server (tools, resources, prompts)
     index.ts             Main entry — mounts auth + MCP on a single port
 
-packages/client/         MCP client example + Claude Desktop connector manifest
+packages/client/         Claude Desktop connector manifest
 ```
 
 ## Prerequisites

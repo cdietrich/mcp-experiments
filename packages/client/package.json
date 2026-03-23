@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"No tests\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

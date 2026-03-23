@@ -17,7 +17,6 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
  */
 const PORT = Number(process.env.MCP_PORT ?? 3000);
 const BASE = normalizeBaseUrl(process.env.BASE_URL ?? `http://localhost:${PORT}`);
-const AUTH_ENABLED = process.env.AUTH_ENABLED !== "false";
 const CORS_ALLOWED_ORIGINS = resolveAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS, BASE);
 
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
@@ -44,7 +43,7 @@ async function main() {
           callback(null, true);
           return;
         }
-        if (CORS_ALLOWED_ORIGINS.includes("*") && !AUTH_ENABLED) {
+        if (CORS_ALLOWED_ORIGINS.includes("*")) {
           callback(null, true);
           return;
         }
@@ -57,6 +56,19 @@ async function main() {
     })
   );
   app.use(express.json());
+
+  // Log 401s with client IP
+  app.use((req, res, next) => {
+    const originalSend = res.send;
+    res.send = function (body) {
+      if (res.statusCode === 401) {
+        const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+        console.warn(`[401] ${req.method} ${req.path} - IP: ${clientIp} - Auth: ${req.headers.authorization ? "Bearer provided" : "No bearer"}`);
+      }
+      return originalSend.call(this, body);
+    };
+    next();
+  });
 
   const mcpPostHandler = async (req: express.Request, res: express.Response) => {
     // Existing session: route request to the live transport.
@@ -121,17 +133,10 @@ async function main() {
     await transports.get(sessionId)!.handleRequest(req, res);
   };
 
-  if (AUTH_ENABLED) {
-    app.post("/mcp", requireBearerAuth(), mcpPostHandler);
-    app.get("/mcp", requireBearerAuth(), mcpSessionHandler);
-    app.delete("/mcp", requireBearerAuth(), mcpSessionHandler);
-    console.log("Auth: ENABLED (OAuth 2.1 Bearer token required)");
-  } else {
-    app.post("/mcp", mcpPostHandler);
-    app.get("/mcp", mcpSessionHandler);
-    app.delete("/mcp", mcpSessionHandler);
-    console.log("Auth: DISABLED");
-  }
+  app.post("/mcp", requireBearerAuth(), mcpPostHandler);
+  app.get("/mcp", requireBearerAuth(), mcpSessionHandler);
+  app.delete("/mcp", requireBearerAuth(), mcpSessionHandler);
+  console.log("Auth: ENABLED (OAuth 2.1 Bearer token required)");
 
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);

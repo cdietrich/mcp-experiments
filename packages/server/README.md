@@ -1,6 +1,6 @@
 # Server Package
 
-This package runs an MCP server over HTTP and optionally protects it with an OAuth-compatible bearer token flow.
+This package runs an MCP server over HTTP and protects it with an OAuth-compatible bearer token flow.
 
 ## What It Hosts
 
@@ -37,7 +37,7 @@ This package runs an MCP server over HTTP and optionally protects it with an OAu
 
 ## Authentication Model
 
-- `AUTH_ENABLED=true` (default): `/mcp` requires bearer token (`requireBearerAuth()` from MCP SDK middleware).
+- `/mcp` requires bearer token (`requireBearerAuth()` from MCP SDK middleware).
 - User identity comes from Google login (`passport-google-oauth20`).
 - Token minting uses authorization-code flow with required PKCE (`S256`).
 - Access tokens are JWTs signed with `JWT_SECRET`.
@@ -57,7 +57,6 @@ See `packages/server/.env.example` for full template.
 
 - `MCP_PORT`: HTTP port (default `3000`)
 - `BASE_URL`: public base URL used in metadata and callbacks
-- `AUTH_ENABLED`: set to `false` to disable bearer auth for `/mcp`
 - `SESSION_SECRET`: express-session signing secret
 - `JWT_SECRET`: JWT signing secret (minimum 32 chars enforced)
 - `GOOGLE_CLIENT_ID`: Google OAuth client ID
@@ -85,4 +84,4 @@ Package scripts:
 
 - In production, `BASE_URL` must be absolute and use `https`.
 - If Google credentials are not set, login cannot complete and auth-protected flows will fail.
-- With `AUTH_ENABLED=false`, CORS can allow `*`; with auth enabled, use explicit origins.
+- `CORS_ALLOWED_ORIGINS` can include `*`, but use an explicit origin allowlist for deployed environments.

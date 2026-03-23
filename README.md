@@ -50,7 +50,6 @@ Edit `packages/server/.env`:
 ```env
 MCP_PORT=3000
 BASE_URL=https://<your-ngrok-domain>
-AUTH_ENABLED=true
 SESSION_SECRET=<random string>
 JWT_SECRET=<random string, min 32 chars>
 GOOGLE_CLIENT_ID=<from Google Cloud Console>
@@ -107,7 +106,6 @@ Claude Desktop will open a browser to complete Google OAuth. After login, the co
 |----------|---------|-------------|
 | `MCP_PORT` | `3000` | Server port |
 | `BASE_URL` | `http://localhost:3000` | Public base URL (set to ngrok URL) |
-| `AUTH_ENABLED` | `true` | Require OAuth Bearer token |
 | `SESSION_SECRET` | — | Express session secret |
 | `JWT_SECRET` | — | JWT signing secret (min 32 chars) |
 | `GOOGLE_CLIENT_ID` | — | Google OAuth client ID |

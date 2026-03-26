@@ -65,6 +65,10 @@ See `packages/server/.env.example` for full template.
 - `SUPPORTED_SCOPES`: comma/space separated scope list (optional)
 - `CORS_ALLOWED_ORIGINS`: comma-separated allowlist of origins (optional)
 
+### Testing / Simulation Flags
+
+- `MCP_SLOW_FIRST_TOOL_CALL_MS`: if set, the first tool call in a server lifetime is delayed by this many milliseconds before returning a result (e.g. `60000` for 60s). Subsequent tool calls are unaffected. Useful for testing client timeout and retry behavior.
+
 ## Local Development
 
 From repo root:

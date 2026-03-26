@@ -9,6 +9,21 @@ import type { CallToolResult, GetPromptResult, ReadResourceResult } from "@model
  * - Resources: list snapshots for core entities
  * - Prompts: helper prompt templates for analysis tasks
  */
+
+// Simulate a slow first tool call. Set MCP_SLOW_FIRST_TOOL_CALL_MS to enable (e.g. 60000).
+const SLOW_FIRST_TOOL_CALL_MS = process.env.MCP_SLOW_FIRST_TOOL_CALL_MS
+  ? Number(process.env.MCP_SLOW_FIRST_TOOL_CALL_MS)
+  : 0;
+let slowFirstToolCallDone = false;
+
+async function maybeSlowFirstToolCall(toolName: string): Promise<void> {
+  if (!SLOW_FIRST_TOOL_CALL_MS || slowFirstToolCallDone) return;
+  slowFirstToolCallDone = true;
+  console.log(`[MCP] Simulating slow tool call for '${toolName}' — delaying ${SLOW_FIRST_TOOL_CALL_MS}ms`);
+  await new Promise((resolve) => setTimeout(resolve, SLOW_FIRST_TOOL_CALL_MS));
+  console.log(`[MCP] Slow tool call delay complete`);
+}
+
 export function createMcpServer(): McpServer {
   const server = new McpServer(
     {
@@ -40,6 +55,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ vendor_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      await maybeSlowFirstToolCall("list_vendor_bills");
       // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
@@ -102,6 +118,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ employee_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      await maybeSlowFirstToolCall("list_expense_reports");
       // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
@@ -164,6 +181,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ customer_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
+      await maybeSlowFirstToolCall("list_sales_orders");
       // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];
@@ -221,6 +239,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ table, id }): Promise<CallToolResult> => {
+      await maybeSlowFirstToolCall("get_record_detail");
       const db = getDb();
       const queries = {
         vendor_bills: "SELECT * FROM vendor_bills WHERE id = ?",

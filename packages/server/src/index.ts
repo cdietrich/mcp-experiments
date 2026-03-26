@@ -21,6 +21,36 @@ const CORS_ALLOWED_ORIGINS = resolveAllowedOrigins(process.env.CORS_ALLOWED_ORIG
 
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
 
+// Simulate slow MCP startup: non-probe MCP requests return 503 Retry-After for 60s after first hit.
+// initialize and ping are allowed through immediately (probes); everything else is delayed.
+const MCP_PROBE_METHODS = new Set(["initialize", "ping"]);
+let mcpStartupReady = false;
+let mcpStartupTimerStarted = false;
+
+function simulateSlowStartup(req: express.Request, res: express.Response): boolean {
+  const method = req.body?.method as string | undefined;
+  if (mcpStartupReady || !method || MCP_PROBE_METHODS.has(method)) return false;
+  if (!mcpStartupTimerStarted) {
+    mcpStartupTimerStarted = true;
+    console.log("[MCP] Simulating slow startup — server will be ready in 60s");
+    setTimeout(() => {
+      mcpStartupReady = true;
+      console.log("[MCP] Startup complete, accepting requests");
+    }, 60_000);
+  }
+  console.log(`[MCP] Not ready yet, rejecting '${method}' with 503 Retry-After: 60`);
+  res.status(503).set("Retry-After", "60").json({
+    jsonrpc: "2.0",
+    error: {
+      code: -32000,
+      message: "Server is warming up, please retry in 60 seconds.",
+      data: { type: "warming_up", retryable: true, retry_after_ms: 60_000 },
+    },
+    id: req.body?.id ?? null,
+  });
+  return true;
+}
+
 async function main() {
   console.log("Initializing database...");
   await initDb();
@@ -71,6 +101,8 @@ async function main() {
   });
 
   const mcpPostHandler = async (req: express.Request, res: express.Response) => {
+    //if (simulateSlowStartup(req, res)) return;
+
     // Existing session: route request to the live transport.
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 

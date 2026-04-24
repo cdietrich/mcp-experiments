@@ -21,6 +21,20 @@ const CORS_ALLOWED_ORIGINS = resolveAllowedOrigins(process.env.CORS_ALLOWED_ORIG
 
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
 
+// Simulate a slow tools/list response. Set MCP_SLOW_TOOLS_LIST_MS to enable (e.g. 60000).
+const SLOW_TOOLS_LIST_MS = process.env.MCP_SLOW_TOOLS_LIST_MS
+  ? Number(process.env.MCP_SLOW_TOOLS_LIST_MS)
+  : 0;
+let slowToolsListDone = false;
+
+async function maybeSlowToolsList(req: express.Request): Promise<void> {
+  if (!SLOW_TOOLS_LIST_MS || slowToolsListDone || req.body?.method !== "tools/list") return;
+  slowToolsListDone = true;
+  console.log(`[MCP] Simulating slow tools/list — delaying ${SLOW_TOOLS_LIST_MS}ms`);
+  await new Promise((resolve) => setTimeout(resolve, SLOW_TOOLS_LIST_MS));
+  console.log(`[MCP] Slow tools/list delay complete`);
+}
+
 // Simulate slow MCP startup: non-probe MCP requests return 503 Retry-After for 60s after first hit.
 // initialize and ping are allowed through immediately (probes); everything else is delayed.
 const MCP_PROBE_METHODS = new Set(["initialize", "ping"]);
@@ -107,6 +121,7 @@ async function main() {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (sessionId && transports.has(sessionId)) {
+      await maybeSlowToolsList(req);
       await transports.get(sessionId)!.handleRequest(req, res, req.body);
       return;
     }

@@ -118,7 +118,7 @@ export function createMcpServer(): McpServer {
       }),
     },
     async ({ employee_name, status, from_date, to_date, limit, offset }): Promise<CallToolResult> => {
-      await maybeSlowFirstToolCall("list_expense_reports");
+      //await maybeSlowFirstToolCall("list_expense_reports");
       // Build WHERE clause dynamically while keeping SQL parameterized.
       const db = getDb();
       const conditions: string[] = [];

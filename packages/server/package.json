@@ -22,14 +22,14 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "sql.js": "^1.14.1",
-    "zod": "^4.4.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.19.0",
     "@types/morgan": "^1.9.10",
-    "@types/node": "^24.12.2",
+    "@types/node": "^24.12.3",
     "@types/passport": "^1.0.17",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/sql.js": "^1.4.11",

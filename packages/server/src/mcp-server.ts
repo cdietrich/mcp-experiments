@@ -1,7 +1,7 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { getDb } from "./db.js";
-import type { CallToolResult, GetPromptResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, GetPromptResult, ReadResourceResult } from "@modelcontextprotocol/server";
 
 /**
  * MCP capability registration:
@@ -35,6 +35,17 @@ export function createMcpServer(): McpServer {
         tools: {},
         resources: {},
         prompts: {},
+      },
+      // Cache hints for the 2026-07-28 revision. The SDK emits `ttlMs` /
+      // `cacheScope` on cacheable results from these; 2025-era clients are
+      // unaffected. Data is per-user and changes rarely, so keep it private.
+      cacheHints: {
+        "tools/list": { ttlMs: 300_000, cacheScope: "private" },
+        "prompts/list": { ttlMs: 300_000, cacheScope: "private" },
+        "resources/list": { ttlMs: 300_000, cacheScope: "private" },
+        "resources/templates/list": { ttlMs: 300_000, cacheScope: "private" },
+        "resources/read": { ttlMs: 60_000, cacheScope: "private" },
+        "server/discover": { ttlMs: 300_000, cacheScope: "private" },
       },
     }
   );
@@ -336,9 +347,9 @@ export function createMcpServer(): McpServer {
     {
       title: "Summarize Expenses",
       description: "Generate an expense summary prompt for the last N days",
-      argsSchema: {
+      argsSchema: z.object({
         days: z.number().default(30).describe("Number of days to look back"),
-      },
+      }),
     },
     async ({ days }): Promise<GetPromptResult> => {
       return {

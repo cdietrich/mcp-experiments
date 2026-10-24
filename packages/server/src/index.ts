@@ -5,21 +5,32 @@ import { randomUUID } from "node:crypto";
 import { initDb } from "./db.js";
 import { createMcpServer } from "./mcp-server.js";
 import { createAuthApp, requireBearerAuth } from "./auth-server.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { createMcpHandler, isInitializeRequest, isLegacyRequest } from "@modelcontextprotocol/server";
+import {
+  NodeStreamableHTTPServerTransport,
+  toNodeHandler,
+  toWebRequest,
+} from "@modelcontextprotocol/node";
 
 /**
  * HTTP entrypoint that hosts:
  * - OAuth metadata and token routes (mounted from auth-server.ts)
  * - Streamable HTTP MCP endpoint at /mcp
  *
- * Each MCP session gets its own transport instance keyed by `mcp-session-id`.
+ * Serves both protocol eras:
+ * - 2025-era (sessionful): `initialize` + `Mcp-Session-Id`, one transport per
+ *   session, for clients that predate the 2026-07-28 revision.
+ * - 2026-07-28 (modern): stateless per-request serving via `createMcpHandler`,
+ *   with the `_meta` request envelope and `server/discover`.
+ *
+ * `isLegacyRequest` runs the SDK's own classification, so the two legs can
+ * never disagree about which era a request belongs to.
  */
 const PORT = Number(process.env.MCP_PORT ?? 3000);
 const BASE = normalizeBaseUrl(process.env.BASE_URL ?? `http://localhost:${PORT}`);
 const CORS_ALLOWED_ORIGINS = resolveAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS, BASE);
 
-const transports: Map<string, StreamableHTTPServerTransport> = new Map();
+const transports: Map<string, NodeStreamableHTTPServerTransport> = new Map();
 
 // Simulate a slow tools/list response. Set MCP_SLOW_TOOLS_LIST_MS to enable (e.g. 60000).
 const SLOW_TOOLS_LIST_MS = process.env.MCP_SLOW_TOOLS_LIST_MS
@@ -36,8 +47,8 @@ async function maybeSlowToolsList(req: express.Request): Promise<void> {
 }
 
 // Simulate slow MCP startup: non-probe MCP requests return 503 Retry-After for 60s after first hit.
-// initialize and ping are allowed through immediately (probes); everything else is delayed.
-const MCP_PROBE_METHODS = new Set(["initialize", "ping"]);
+// initialize, ping (2025-era), and server/discover (2026-07-28) are probes and pass through.
+const MCP_PROBE_METHODS = new Set(["initialize", "ping", "server/discover"]);
 let mcpStartupReady = false;
 let mcpStartupTimerStarted = false;
 
@@ -69,6 +80,17 @@ async function main() {
   console.log("Initializing database...");
   await initDb();
   console.log("Database ready.");
+
+  // Modern (2026-07-28) leg: stateless, one server instance per request.
+  // `legacy: "reject"` because 2025-era traffic is routed to the sessionful
+  // transport in user land below.
+  const modernHandler = createMcpHandler(() => createMcpServer(), {
+    legacy: "reject",
+    onerror: (error) => console.error("[MCP] Modern handler error:", error),
+  });
+  const modernNodeHandler = toNodeHandler(modernHandler, {
+    onerror: (error) => console.error("[MCP] Modern adapter error:", error),
+  });
 
   const app = express();
   app.set("trust proxy", 1);
@@ -114,14 +136,11 @@ async function main() {
     next();
   });
 
-  const mcpPostHandler = async (req: express.Request, res: express.Response) => {
-    //if (simulateSlowStartup(req, res)) return;
-
+  const legacyPostHandler = async (req: express.Request, res: express.Response) => {
     // Existing session: route request to the live transport.
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (sessionId && transports.has(sessionId)) {
-      await maybeSlowToolsList(req);
       await transports.get(sessionId)!.handleRequest(req, res, req.body);
       return;
     }
@@ -137,7 +156,7 @@ async function main() {
 
     if (!sessionId && isInitializeRequest(req.body)) {
       // New initialize request: create a transport and bind it to this session.
-      const transport = new StreamableHTTPServerTransport({
+      const transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
           console.log(`[MCP] Session initialized: ${sid}`);
@@ -166,7 +185,7 @@ async function main() {
     });
   };
 
-  const mcpSessionHandler = async (req: express.Request, res: express.Response) => {
+  const legacySessionHandler = async (req: express.Request, res: express.Response) => {
     // GET/DELETE requests must target an existing MCP session.
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (!sessionId) {
@@ -180,26 +199,78 @@ async function main() {
     await transports.get(sessionId)!.handleRequest(req, res);
   };
 
-  app.post("/mcp", requireBearerAuth(), mcpPostHandler);
-  app.get("/mcp", requireBearerAuth(), mcpSessionHandler);
-  app.delete("/mcp", requireBearerAuth(), mcpSessionHandler);
-  console.log("Auth: ENABLED (OAuth 2.1 Bearer token required)");
+  const legacyHandler = async (req: express.Request, res: express.Response) => {
+    if (req.method === "POST") {
+      await legacyPostHandler(req, res);
+      return;
+    }
+    if (req.method === "GET" || req.method === "DELETE") {
+      await legacySessionHandler(req, res);
+      return;
+    }
+    res.status(405).set("Allow", "GET, POST, DELETE").json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed" },
+      id: null,
+    });
+  };
 
-  app.listen(PORT, () => {
+  app.all("/mcp", requireBearerAuth(), async (req, res, next) => {
+    try {
+      //if (simulateSlowStartup(req, res)) return;
+
+      if (req.method === "POST") {
+        await maybeSlowToolsList(req);
+      }
+
+      // Behind express.json() the Node stream is drained, so build the probe
+      // from the parsed body and hand the same value to the classifier.
+      const probe = await toWebRequest(req, req.body);
+      const legacy = await isLegacyRequest(probe, req.body);
+
+      if (legacy) {
+        await legacyHandler(req, res);
+        return;
+      }
+
+      // `toNodeHandler` forwards `req.auth` (set by requireBearerAuth) as the
+      // handler's authInfo, so both eras see the same verified token.
+      await modernNodeHandler(req, res, req.body);
+    } catch (error) {
+      if ((error as { status?: number }).status === 413) {
+        res.status(413).json({
+          jsonrpc: "2.0",
+          error: { code: -32600, message: "Request body too large" },
+          id: null,
+        });
+        return;
+      }
+      next(error);
+    }
+  });
+  console.log("Auth: ENABLED (OAuth 2.1 Bearer token required)");
+  console.log("MCP eras: 2025-era sessionful + 2026-07-28 stateless");
+
+  const httpServer = app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);
     console.log(`  MCP endpoint:     ${BASE}/mcp`);
     console.log(`  Auth metadata:    ${BASE}/.well-known/oauth-authorization-server`);
     console.log(`  Resource metadata:${BASE}/.well-known/oauth-protected-resource`);
   });
 
-  process.on("SIGINT", async () => {
+  const shutdown = async () => {
     console.log("\nShutting down...");
+    httpServer.close();
     for (const [sid, transport] of transports) {
       await transport.close();
       transports.delete(sid);
     }
+    await modernHandler.close();
     process.exit(0);
-  });
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main().catch((err) => {

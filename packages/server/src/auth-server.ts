@@ -5,15 +5,20 @@ import session from "express-session";
 import {
   InvalidGrantError,
   InvalidScopeError,
-  InvalidTokenError,
   ServerError,
-} from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
-import { requireBearerAuth as sdkRequireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+  mcpAuthRouter,
+  getOAuthProtectedResourceMetadataUrl,
+  type AuthInfo,
+  type OAuthRegisteredClientsStore,
+  type OAuthServerProvider,
+} from "@modelcontextprotocol/server-legacy/auth";
+import { requireBearerAuth as sdkRequireBearerAuth } from "@modelcontextprotocol/express";
+import {
+  OAuthError,
+  OAuthErrorCode,
+  type OAuthClientInformationFull,
+  type OAuthTokens,
+} from "@modelcontextprotocol/server";
 import { getDb, saveDb } from "./db.js";
 import { passport as passportAuth, setupGoogleStrategy } from "./google-strategy.js";
 
@@ -25,6 +30,9 @@ import { passport as passportAuth, setupGoogleStrategy } from "./google-strategy
  * - Signed JWT access tokens plus stored refresh tokens
  */
 const BASE = normalizeBaseUrl(process.env.BASE_URL ?? "http://localhost:3000");
+// RFC 9207 issuer identifier. Must match the `issuer` published in the AS
+// metadata, which `mcpAuthRouter` derives from `new URL(BASE).href`.
+const ISSUER = new URL(BASE).href;
 const DEFAULT_SCOPE = process.env.DEFAULT_SCOPE ?? "default";
 const SUPPORTED_SCOPES = parseScopes(process.env.SUPPORTED_SCOPES, [
   "openid",
@@ -164,9 +172,13 @@ export function createAuthApp(): express.Application {
         );
         saveDb();
 
-        const params = new URLSearchParams({ code });
-        if (oauth.state) params.set("state", oauth.state);
-        res.redirect(`${oauth.redirectUri}?${params.toString()}`);
+        // This redirect is issued from the Google callback, not from the
+        // router's `authorize()` wrapper, so RFC 9207 `iss` must be added here.
+        const redirect = new URL(oauth.redirectUri);
+        redirect.searchParams.set("code", code);
+        if (oauth.state) redirect.searchParams.set("state", oauth.state);
+        redirect.searchParams.set("iss", ISSUER);
+        res.redirect(redirect.toString());
       } catch {
         res.redirect(`${BASE}/?error=server_error`);
       }
@@ -527,18 +539,18 @@ function createOAuthProvider(): OAuthServerProvider {
       const exp = payload.exp as number | undefined;
 
       if (!jti || !userId || !clientId || !exp) {
-        throw new InvalidTokenError("Token missing required claims");
+        throw new OAuthError(OAuthErrorCode.InvalidToken, "Token missing required claims");
       }
 
       const db = getDb();
       const rows = db.exec("SELECT scope, expires_at FROM oauth_tokens WHERE jti = ?", [jti]);
       if (!rows.length || !rows[0].values.length) {
-        throw new InvalidTokenError("Token revoked or unknown");
+        throw new OAuthError(OAuthErrorCode.InvalidToken, "Token revoked or unknown");
       }
 
       const [scope, expiresAt] = rows[0].values[0] as [string | null, number];
       if (Date.now() / 1000 > expiresAt) {
-        throw new InvalidTokenError("Token expired");
+        throw new OAuthError(OAuthErrorCode.InvalidToken, "Token expired");
       }
 
       return {
